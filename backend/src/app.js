@@ -1,49 +1,71 @@
 const express = require("express");
 const cors = require("cors");
+const connectDB = require("./config/db");
 
 const authRoutes = require("./routes/authRoutes");
 const walletRoutes = require("./routes/walletRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
 
 const app = express();
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Root health check
-app.get("/", (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "VELOop Rewards Wallet API is running",
-  });
-});
-
-// API health check
+// Health check
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
-    status: "OK",
-    message: "Backend is healthy",
+    message: "VELOOP Wallet API is running",
   });
 });
 
-// Authentication routes
+// API routes
 app.use("/api/auth", authRoutes);
-
-// Wallet routes
 app.use("/api/wallet", walletRoutes);
-
-// Transaction routes — use plural "transactions"
 app.use("/api/transactions", transactionRoutes);
 
-// 404 handler — must remain after all routes
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: "API route not found",
+    message: `Route not found: ${req.method} ${req.originalUrl}`,
   });
 });
+
+// Central error handler
+app.use((err, req, res, next) => {
+  console.error("API Error:", err.message);
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const statusCode =
+    err.statusCode ||
+    (err.message === "Insufficient wallet balance" ? 400 : 500);
+
+  return res.status(statusCode).json({
+    success: false,
+    message: statusCode === 500 ? "Internal server error" : err.message,
+  });
+});
+
+// Start server after database connection
+const startServer = async () => {
+  try {
+    await connectDB();
+
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error.message);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 module.exports = app;

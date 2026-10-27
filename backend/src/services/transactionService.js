@@ -1,94 +1,71 @@
 const mongoose = require("mongoose");
 const { randomUUID } = require("crypto");
 
-const Wallet = require("../models/Wallet");
 const Transaction = require("../models/Transaction");
+const Wallet = require("../models/Wallet");
 
-// Validate transaction amount
-const validateAmount = (amount) => {
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
-    const error = new Error("Amount must be a number greater than zero");
-    error.statusCode = 400;
-    throw error;
-  }
+const getTransactionHistory = async (userId, page = 1, limit = 10) => {
+  const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 10));
 
-  // Keep amounts to two decimal places
-  const roundedAmount = Math.round(amount * 100) / 100;
+  const filter = { user: userId };
+  const skip = (currentPage - 1) * pageSize;
 
-  if (roundedAmount <= 0) {
-    const error = new Error("Amount must be at least 0.01");
-    error.statusCode = 400;
-    throw error;
-  }
+  const [transactions, total] = await Promise.all([
+    Transaction.find(filter)
+      .select("type amount description status reference createdAt")
+      .sort({ createdAt: -1, _id: -1 })
+      .skip(skip)
+      .limit(pageSize)
+      .lean(),
+    Transaction.countDocuments(filter),
+  ]);
 
-  return roundedAmount;
+  return {
+    transactions,
+    pagination: {
+      total,
+      page: currentPage,
+      limit: pageSize,
+      totalPages: Math.ceil(total / pageSize),
+      hasNextPage: skip + transactions.length < total,
+      hasPreviousPage: currentPage > 1,
+    },
+  };
 };
 
-// Credit or debit a user's wallet
-const createTransaction = async ({
-  userId,
-  type,
-  amount,
-  description = "",
-}) => {
-  if (!["credit", "debit"].includes(type)) {
-    const error = new Error("Transaction type must be credit or debit");
-    error.statusCode = 400;
-    throw error;
-  }
+const creditWallet = async (userId, amount, description = "Wallet credit") => {
+  const value = Number(amount);
 
-  const validAmount = validateAmount(amount);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("Amount must be greater than zero");
+  }
 
   const session = await mongoose.startSession();
 
-  let result;
-
   try {
+    let result;
+
     await session.withTransaction(async () => {
-      // Find the authenticated user's wallet
       const wallet = await Wallet.findOne({ user: userId }).session(session);
 
       if (!wallet) {
-        const error = new Error("Wallet not found");
-        error.statusCode = 404;
-        throw error;
+        throw new Error("Wallet not found");
       }
 
-      let updatedWallet;
+      const updatedWallet = await Wallet.findOneAndUpdate(
+        { _id: wallet._id },
+        { $inc: { balance: value } },
+        { new: true, session },
+      );
 
-      if (type === "credit") {
-        // Atomically add funds
-        updatedWallet = await Wallet.findOneAndUpdate(
-          { _id: wallet._id },
-          { $inc: { balance: validAmount } },
-          { new: true, session },
-        );
-      } else {
-        // Atomically deduct only if sufficient funds are available
-        updatedWallet = await Wallet.findOneAndUpdate(
-          {
-            _id: wallet._id,
-            balance: { $gte: validAmount },
-          },
-          { $inc: { balance: -validAmount } },
-          { new: true, session },
-        );
-
-        if (!updatedWallet) {
-          const error = new Error("Insufficient wallet balance");
-          error.statusCode = 400;
-          throw error;
-        }
-      }
-
-      // Save the transaction record
       const [transaction] = await Transaction.create(
         [
           {
-            wallet: updatedWallet._id,
             user: userId,
-            type,
-            amount: validAmount,
+            wallet: wallet._id,
+            type: "credit",
+            amount: value,
             description,
             status: "completed",
             reference: randomUUID(),
@@ -97,22 +74,7 @@ const createTransaction = async ({
         { session },
       );
 
-      result = {
-        transaction: {
-          id: transaction._id.toString(),
-          type: transaction.type,
-          amount: transaction.amount,
-          description: transaction.description,
-          status: transaction.status,
-          reference: transaction.reference,
-          createdAt: transaction.createdAt,
-        },
-        wallet: {
-          id: updatedWallet._id.toString(),
-          balance: updatedWallet.balance,
-          currency: updatedWallet.currency,
-        },
-      };
+      result = { wallet: updatedWallet, transaction };
     });
 
     return result;
@@ -121,27 +83,63 @@ const createTransaction = async ({
   }
 };
 
-// Add money to wallet
-const creditWallet = async ({ userId, amount, description }) => {
-  return createTransaction({
-    userId,
-    type: "credit",
-    amount,
-    description,
-  });
-};
+const debitWallet = async (userId, amount, description = "Wallet debit") => {
+  const value = Number(amount);
 
-// Deduct money from wallet
-const debitWallet = async ({ userId, amount, description }) => {
-  return createTransaction({
-    userId,
-    type: "debit",
-    amount,
-    description,
-  });
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("Amount must be greater than zero");
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
+      const wallet = await Wallet.findOneAndUpdate(
+        { user: userId, balance: { $gte: value } },
+        { $inc: { balance: -value } },
+        { new: true, session },
+      );
+
+      if (!wallet) {
+        const existingWallet = await Wallet.findOne({ user: userId }).session(
+          session,
+        );
+
+        if (!existingWallet) {
+          throw new Error("Wallet not found");
+        }
+
+        throw new Error("Insufficient wallet balance");
+      }
+
+      const [transaction] = await Transaction.create(
+        [
+          {
+            user: userId,
+            wallet: wallet._id,
+            type: "debit",
+            amount: value,
+            description,
+            status: "completed",
+            reference: randomUUID(),
+          },
+        ],
+        { session },
+      );
+
+      result = { wallet, transaction };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 module.exports = {
+  getTransactionHistory,
   creditWallet,
   debitWallet,
 };
