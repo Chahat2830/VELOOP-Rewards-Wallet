@@ -4,6 +4,14 @@ const { randomUUID } = require("crypto");
 const Transaction = require("../models/Transaction");
 const Wallet = require("../models/Wallet");
 
+// Create errors with HTTP status codes
+const createHttpError = (message, statusCode) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
+// Get paginated transaction history
 const getTransactionHistory = async (userId, page = 1, limit = 10) => {
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
   const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 10));
@@ -34,11 +42,12 @@ const getTransactionHistory = async (userId, page = 1, limit = 10) => {
   };
 };
 
+// Credit wallet
 const creditWallet = async (userId, amount, description = "Wallet credit") => {
   const value = Number(amount);
 
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error("Amount must be greater than zero");
+    throw createHttpError("Amount must be greater than zero", 400);
   }
 
   const session = await mongoose.startSession();
@@ -50,7 +59,7 @@ const creditWallet = async (userId, amount, description = "Wallet credit") => {
       const wallet = await Wallet.findOne({ user: userId }).session(session);
 
       if (!wallet) {
-        throw new Error("Wallet not found");
+        throw createHttpError("Wallet not found", 404);
       }
 
       const updatedWallet = await Wallet.findOneAndUpdate(
@@ -83,11 +92,12 @@ const creditWallet = async (userId, amount, description = "Wallet credit") => {
   }
 };
 
+// Debit wallet
 const debitWallet = async (userId, amount, description = "Wallet debit") => {
   const value = Number(amount);
 
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error("Amount must be greater than zero");
+    throw createHttpError("Amount must be greater than zero", 400);
   }
 
   const session = await mongoose.startSession();
@@ -103,15 +113,15 @@ const debitWallet = async (userId, amount, description = "Wallet debit") => {
       );
 
       if (!wallet) {
-        const existingWallet = await Wallet.findOne({ user: userId }).session(
-          session,
-        );
+        const existingWallet = await Wallet.findOne({
+          user: userId,
+        }).session(session);
 
         if (!existingWallet) {
-          throw new Error("Wallet not found");
+          throw createHttpError("Wallet not found", 404);
         }
 
-        throw new Error("Insufficient wallet balance");
+        throw createHttpError("Insufficient wallet balance", 400);
       }
 
       const [transaction] = await Transaction.create(
