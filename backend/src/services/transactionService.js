@@ -1,23 +1,19 @@
 const mongoose = require("mongoose");
 const { randomUUID } = require("crypto");
-
 const Transaction = require("../models/Transaction");
 const Wallet = require("../models/Wallet");
 
-// Create errors with HTTP status codes
 const createHttpError = (message, statusCode) => {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
 };
 
-// Get paginated transaction history
 const getTransactionHistory = async (userId, page = 1, limit = 10) => {
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
   const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 10));
-
-  const filter = { user: userId };
   const skip = (currentPage - 1) * pageSize;
+  const filter = { user: userId };
 
   const [transactions, total] = await Promise.all([
     Transaction.find(filter)
@@ -42,7 +38,6 @@ const getTransactionHistory = async (userId, page = 1, limit = 10) => {
   };
 };
 
-// Credit wallet
 const creditWallet = async (userId, amount, description = "Wallet credit") => {
   const value = Number(amount);
 
@@ -56,14 +51,16 @@ const creditWallet = async (userId, amount, description = "Wallet credit") => {
     let result;
 
     await session.withTransaction(async () => {
-      const wallet = await Wallet.findOne({ user: userId }).session(session);
+      const existingWallet = await Wallet.findOne({ user: userId }).session(
+        session,
+      );
 
-      if (!wallet) {
+      if (!existingWallet) {
         throw createHttpError("Wallet not found", 404);
       }
 
-      const updatedWallet = await Wallet.findOneAndUpdate(
-        { _id: wallet._id },
+      const wallet = await Wallet.findOneAndUpdate(
+        { _id: existingWallet._id },
         { $inc: { balance: value } },
         { new: true, session },
       );
@@ -83,7 +80,11 @@ const creditWallet = async (userId, amount, description = "Wallet credit") => {
         { session },
       );
 
-      result = { wallet: updatedWallet, transaction };
+      result = {
+        wallet,
+        availableBalance: wallet.balance - (wallet.reservedBalance || 0),
+        transaction,
+      };
     });
 
     return result;
@@ -92,7 +93,6 @@ const creditWallet = async (userId, amount, description = "Wallet credit") => {
   }
 };
 
-// Debit wallet
 const debitWallet = async (userId, amount, description = "Wallet debit") => {
   const value = Number(amount);
 
@@ -107,21 +107,31 @@ const debitWallet = async (userId, amount, description = "Wallet debit") => {
 
     await session.withTransaction(async () => {
       const wallet = await Wallet.findOneAndUpdate(
-        { user: userId, balance: { $gte: value } },
+        {
+          user: userId,
+          $expr: {
+            $gte: [
+              {
+                $subtract: ["$balance", { $ifNull: ["$reservedBalance", 0] }],
+              },
+              value,
+            ],
+          },
+        },
         { $inc: { balance: -value } },
         { new: true, session },
       );
 
       if (!wallet) {
-        const existingWallet = await Wallet.findOne({
-          user: userId,
-        }).session(session);
+        const existingWallet = await Wallet.findOne({ user: userId }).session(
+          session,
+        );
 
         if (!existingWallet) {
           throw createHttpError("Wallet not found", 404);
         }
 
-        throw createHttpError("Insufficient wallet balance", 400);
+        throw createHttpError("Insufficient available wallet balance", 400);
       }
 
       const [transaction] = await Transaction.create(
@@ -139,7 +149,11 @@ const debitWallet = async (userId, amount, description = "Wallet debit") => {
         { session },
       );
 
-      result = { wallet, transaction };
+      result = {
+        wallet,
+        availableBalance: wallet.balance - (wallet.reservedBalance || 0),
+        transaction,
+      };
     });
 
     return result;

@@ -8,13 +8,16 @@ const walletSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
-
     balance: {
       type: Number,
       default: 0,
       min: 0,
     },
-
+    reservedBalance: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     currency: {
       type: String,
       default: "INR",

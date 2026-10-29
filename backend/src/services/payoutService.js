@@ -16,12 +16,14 @@ const formatPayout = (payout) => {
 
   if (payout.payoutMethod === "UPI") {
     const parts = (details.upiId || "").split("@");
+
     safeDetails = {
       upiId:
         parts.length === 2 ? `${parts[0].slice(0, 2)}***@${parts[1]}` : "***",
     };
   } else {
     const accountNumber = details.accountNumber || "";
+
     safeDetails = {
       accountHolderName: details.accountHolderName || "",
       accountNumber: accountNumber ? `****${accountNumber.slice(-4)}` : "",
@@ -43,7 +45,6 @@ const formatPayout = (payout) => {
   };
 };
 
-// Create a payout request. Funds are checked but not reserved here.
 const createPayoutRequest = async (
   userId,
   amount,
@@ -90,10 +91,12 @@ const createPayoutRequest = async (
       typeof payoutDetails.accountHolderName === "string"
         ? payoutDetails.accountHolderName.trim()
         : "";
+
     const accountNumber =
       typeof payoutDetails.accountNumber === "string"
         ? payoutDetails.accountNumber.trim()
         : "";
+
     const ifscCode =
       typeof payoutDetails.ifscCode === "string"
         ? payoutDetails.ifscCode.trim().toUpperCase()
@@ -114,40 +117,77 @@ const createPayoutRequest = async (
     details = { accountHolderName, accountNumber, ifscCode };
   }
 
-  const wallet = await Wallet.findOne({ user: userId });
+  const session = await mongoose.startSession();
 
-  if (!wallet) {
-    throw createError("Wallet not found", 404);
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
+      // Reserve only if enough unreserved balance is available.
+      const wallet = await Wallet.findOneAndUpdate(
+        {
+          user: userId,
+          $expr: {
+            $gte: [
+              {
+                $subtract: ["$balance", { $ifNull: ["$reservedBalance", 0] }],
+              },
+              value,
+            ],
+          },
+        },
+        { $inc: { reservedBalance: value } },
+        { new: true, session },
+      );
+
+      if (!wallet) {
+        const existingWallet = await Wallet.findOne({ user: userId }).session(
+          session,
+        );
+
+        if (!existingWallet) {
+          throw createError("Wallet not found", 404);
+        }
+
+        throw createError("Insufficient available wallet balance", 400);
+      }
+
+      const [payout] = await Payout.create(
+        [
+          {
+            user: userId,
+            wallet: wallet._id,
+            amount: value,
+            payoutMethod,
+            payoutDetails: details,
+            status: "pending",
+          },
+        ],
+        { session },
+      );
+
+      result = {
+        id: payout._id.toString(),
+        reference: payout.reference,
+        amount: payout.amount,
+        currency: wallet.currency,
+        payoutMethod: payout.payoutMethod,
+        status: payout.status,
+        createdAt: payout.createdAt,
+        reservedBalance: wallet.reservedBalance,
+        availableBalance: wallet.balance - wallet.reservedBalance,
+      };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  if (value > wallet.balance) {
-    throw createError("Insufficient wallet balance", 400);
-  }
-
-  const payout = await Payout.create({
-    user: userId,
-    wallet: wallet._id,
-    amount: value,
-    payoutMethod,
-    payoutDetails: details,
-    status: "pending",
-  });
-
-  return {
-    id: payout._id.toString(),
-    reference: payout.reference,
-    amount: payout.amount,
-    currency: wallet.currency,
-    payoutMethod: payout.payoutMethod,
-    status: payout.status,
-    createdAt: payout.createdAt,
-  };
 };
 
 const getMyPayouts = async (userId, page = 1, limit = 10) => {
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
   const pageSize = Math.min(50, Math.max(1, Number.parseInt(limit, 10) || 10));
-
   const filter = { user: userId };
 
   const [payouts, total] = await Promise.all([
@@ -189,17 +229,16 @@ const getMyPayoutById = async (userId, payoutId) => {
   return formatPayout(payout);
 };
 
-// Approve and debit the wallet atomically.
-// An approved payout has been debited, but is not necessarily paid externally.
 const approvePayout = async (payoutId, adminId) => {
   if (!mongoose.isValidObjectId(payoutId)) {
     throw createError("Invalid payout ID", 400);
   }
 
   const session = await mongoose.startSession();
-  let result;
 
   try {
+    let result;
+
     await session.withTransaction(async () => {
       const payout = await Payout.findOne({
         _id: payoutId,
@@ -219,34 +258,31 @@ const approvePayout = async (payoutId, adminId) => {
         );
       }
 
+      // Consume the reserved funds and reduce the total balance.
       const wallet = await Wallet.findOneAndUpdate(
         {
           _id: payout.wallet,
           balance: { $gte: payout.amount },
+          reservedBalance: { $gte: payout.amount },
         },
-        { $inc: { balance: -payout.amount } },
+        {
+          $inc: {
+            balance: -payout.amount,
+            reservedBalance: -payout.amount,
+          },
+        },
         { new: true, session },
       );
 
       if (!wallet) {
-        const existingWallet = await Wallet.findById(payout.wallet).session(
-          session,
-        );
-
-        if (!existingWallet) {
-          throw createError("Wallet not found", 404);
-        }
-
-        throw createError(
-          "Insufficient wallet balance to approve this payout",
-          409,
-        );
+        throw createError("Wallet or reserved balance is insufficient", 409);
       }
 
       payout.status = "approved";
       payout.reviewedBy = adminId;
       payout.reviewedAt = new Date();
       payout.rejectionReason = null;
+
       await payout.save({ session });
 
       const [transaction] = await Transaction.create(
@@ -267,6 +303,8 @@ const approvePayout = async (payoutId, adminId) => {
       result = {
         payout: formatPayout(payout.toObject()),
         walletBalance: wallet.balance,
+        reservedBalance: wallet.reservedBalance,
+        availableBalance: wallet.balance - wallet.reservedBalance,
         transactionReference: transaction.reference,
       };
     });
@@ -277,8 +315,6 @@ const approvePayout = async (payoutId, adminId) => {
   }
 };
 
-// Reject only pending payouts. No refund is issued because this
-// implementation does not reserve or debit money when a request is created.
 const rejectPayout = async (payoutId, adminId, reason) => {
   if (!mongoose.isValidObjectId(payoutId)) {
     throw createError("Invalid payout ID", 400);
@@ -295,22 +331,15 @@ const rejectPayout = async (payoutId, adminId, reason) => {
   }
 
   const session = await mongoose.startSession();
-  let result;
 
   try {
+    let result;
+
     await session.withTransaction(async () => {
-      const payout = await Payout.findOneAndUpdate(
-        { _id: payoutId, status: "pending" },
-        {
-          $set: {
-            status: "rejected",
-            reviewedBy: adminId,
-            reviewedAt: new Date(),
-            rejectionReason: cleanReason,
-          },
-        },
-        { new: true, session, runValidators: true },
-      );
+      const payout = await Payout.findOne({
+        _id: payoutId,
+        status: "pending",
+      }).session(session);
 
       if (!payout) {
         const existing = await Payout.findById(payoutId).session(session);
@@ -325,7 +354,33 @@ const rejectPayout = async (payoutId, adminId, reason) => {
         );
       }
 
-      result = formatPayout(payout.toObject());
+      // Release the reserved amount without changing total balance.
+      const wallet = await Wallet.findOneAndUpdate(
+        {
+          _id: payout.wallet,
+          reservedBalance: { $gte: payout.amount },
+        },
+        { $inc: { reservedBalance: -payout.amount } },
+        { new: true, session },
+      );
+
+      if (!wallet) {
+        throw createError("Reserved wallet balance is insufficient", 409);
+      }
+
+      payout.status = "rejected";
+      payout.reviewedBy = adminId;
+      payout.reviewedAt = new Date();
+      payout.rejectionReason = cleanReason;
+
+      await payout.save({ session });
+
+      result = {
+        payout: formatPayout(payout.toObject()),
+        walletBalance: wallet.balance,
+        reservedBalance: wallet.reservedBalance,
+        availableBalance: wallet.balance - wallet.reservedBalance,
+      };
     });
 
     return result;
