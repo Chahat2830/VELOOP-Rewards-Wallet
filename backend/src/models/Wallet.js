@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 
+const currencies = ["VES", "SVES", "GEMS", "TOKENS", "SPINS"];
 const walletSchema = new mongoose.Schema(
   {
     user: {
@@ -7,26 +8,25 @@ const walletSchema = new mongoose.Schema(
       ref: "User",
       required: true,
       unique: true,
+      index: true,
     },
-    balance: {
-      type: Number,
-      default: 0,
-      min: 0,
+    balances: {
+      VES: { type: Number, default: 0, min: 0 },
+      SVES: { type: Number, default: 0, min: 0 },
+      GEMS: { type: Number, default: 0, min: 0 },
+      TOKENS: { type: Number, default: 0, min: 0 },
+      SPINS: { type: Number, default: 0, min: 0 },
     },
-    reservedBalance: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-    currency: {
-      type: String,
-      default: "INR",
-      enum: ["INR"],
+    reservedBalances: {
+      VES: { type: Number, default: 0, min: 0 },
+      SVES: { type: Number, default: 0, min: 0 },
+      GEMS: { type: Number, default: 0, min: 0 },
+      TOKENS: { type: Number, default: 0, min: 0 },
+      SPINS: { type: Number, default: 0, min: 0 },
     },
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true, minimize: false },
 );
 
+walletSchema.statics.currencies = currencies;
 module.exports = mongoose.model("Wallet", walletSchema);

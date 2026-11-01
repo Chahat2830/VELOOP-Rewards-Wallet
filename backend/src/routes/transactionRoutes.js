@@ -1,16 +1,27 @@
-const express = require("express");
-const router = express.Router();
-
-const transactionController = require("../controllers/transactionController");
+const router = require("express").Router();
 const { protect } = require("../middleware/authMiddleware");
+const { requireAdmin } = require("../middleware/adminMiddleware");
+const controller = require("../controllers/transactionController");
+const {
+  validateCredit,
+  validateDebit,
+  validateHistory,
+} = require("../validators/walletValidator");
 
-// Transaction history
-router.get("/", protect, transactionController.getTransactionHistory);
-
-// Wallet credit
-router.post("/credit", protect, transactionController.creditWallet);
-
-// Wallet debit
-router.post("/debit", protect, transactionController.debitWallet);
+router.get("/", protect, validateHistory, controller.getTransactionHistory);
+router.post(
+  "/credit",
+  protect,
+  requireAdmin,
+  validateCredit,
+  controller.creditWallet,
+);
+router.post(
+  "/debit",
+  protect,
+  requireAdmin,
+  validateDebit,
+  controller.debitWallet,
+);
 
 module.exports = router;

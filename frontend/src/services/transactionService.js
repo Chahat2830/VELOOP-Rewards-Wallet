@@ -1,0 +1,1 @@
+import api from './api';export async function getTransactions(page=1,limit=20){const {data}=await api.get('/transactions',{params:{page,limit}});return data?.data?.transactions??data?.transactions??[];}export async function adjustWallet(body,kind){const {data}=await api.post(`/transactions/${kind}`,body);return data?.data??data;}

@@ -1,28 +1,38 @@
-const express = require("express");
+const router = require("express").Router();
 const { protect } = require("../middleware/authMiddleware");
 const { requireAdmin } = require("../middleware/adminMiddleware");
-const payoutController = require("../controllers/payoutController");
+const controller = require("../controllers/payoutController");
+const {
+  validateWithdrawal,
+  validateId,
+  validateReject,
+  validatePagination,
+} = require("../validators/payoutValidator");
 
-const router = express.Router();
-
-// Authenticated customer routes
-router.post("/", protect, payoutController.createPayoutRequest);
-router.get("/", protect, payoutController.getMyPayouts);
-router.get("/:id", protect, payoutController.getMyPayoutById);
-
-// Admin-only routes
+router.get("/options", protect, controller.getPayoutOptions);
+router.post("/", protect, validateWithdrawal, controller.createPayoutRequest);
+router.get("/", protect, validatePagination, controller.getMyPayouts);
+router.get("/:id", protect, validateId, controller.getMyPayoutById);
+router.patch(
+  "/:id/process",
+  protect,
+  requireAdmin,
+  validateId,
+  controller.processPayout,
+);
 router.patch(
   "/:id/approve",
   protect,
   requireAdmin,
-  payoutController.approvePayout,
+  validateId,
+  controller.approvePayout,
 );
-
 router.patch(
   "/:id/reject",
   protect,
   requireAdmin,
-  payoutController.rejectPayout,
+  validateReject,
+  controller.rejectPayout,
 );
 
 module.exports = router;

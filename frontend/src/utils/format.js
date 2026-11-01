@@ -1,0 +1,1 @@
+export const money=(v,c='VES')=>`${Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} ${c}`;export const dateTime=v=>v?new Date(v).toLocaleString():'—';export const label=v=>String(v||'').toLowerCase().replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());

@@ -1,333 +1,183 @@
 const mongoose = require("mongoose");
-const { randomUUID } = require("crypto");
-const Payout = require("../models/Payout");
+const { createHash, randomUUID } = require("crypto");
+const Withdrawal = require("../models/Withdrawal");
 const Wallet = require("../models/Wallet");
 const Transaction = require("../models/Transaction");
+const walletEngine = require("./walletEngine");
+const { createHttpError } = require("../utils/errorHandler");
+const { recordWalletAudit } = require("./auditService");
 
-const createError = (message, statusCode) => {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
-};
-
-const formatPayout = (payout) => {
-  const details = payout.payoutDetails || {};
-  let safeDetails = {};
-
-  if (payout.payoutMethod === "UPI") {
-    const parts = (details.upiId || "").split("@");
-
-    safeDetails = {
-      upiId:
-        parts.length === 2 ? `${parts[0].slice(0, 2)}***@${parts[1]}` : "***",
-    };
-  } else {
-    const accountNumber = details.accountNumber || "";
-
-    safeDetails = {
-      accountHolderName: details.accountHolderName || "",
-      accountNumber: accountNumber ? `****${accountNumber.slice(-4)}` : "",
-      ifscCode: details.ifscCode || "",
-    };
+const fingerprint = (data) =>
+  createHash("sha256").update(JSON.stringify(data)).digest("hex");
+const formatWithdrawal = (w) => ({
+  id: String(w._id),
+  withdrawalId: w.withdrawalId,
+  currency: w.currency,
+  amount: w.amount,
+  payoutMethod: w.payoutMethod,
+  payoutDetails:
+    w.payoutMethod === "UPI"
+      ? {
+          upiId: (w.payoutDetails?.upiId || "").replace(
+            /^(.{2}).*(@.*)$/,
+            "$1***$2",
+          ),
+        }
+      : {
+          accountHolderName: w.payoutDetails?.accountHolderName || "",
+          accountNumber: `****${String(w.payoutDetails?.accountNumber || "").slice(-4)}`,
+          ifscCode: w.payoutDetails?.ifscCode || "",
+        },
+  status: w.status,
+  rejectionReason: w.rejectionReason,
+  reviewedAt: w.reviewedAt,
+  createdAt: w.createdAt,
+  updatedAt: w.updatedAt,
+});
+function normalizeDetails(method, details) {
+  if (!details || typeof details !== "object" || Array.isArray(details))
+    throw createHttpError("Payout details are required", 400);
+  if (method === "UPI") {
+    const upiId = String(details.upiId || "").trim();
+    if (!/^[\w.-]{2,256}@[a-zA-Z0-9.-]{2,64}$/.test(upiId))
+      throw createHttpError("A valid UPI ID is required", 400);
+    return { upiId };
   }
-
-  return {
-    id: payout._id.toString(),
-    reference: payout.reference,
-    amount: payout.amount,
-    payoutMethod: payout.payoutMethod,
-    payoutDetails: safeDetails,
-    status: payout.status,
-    reviewedAt: payout.reviewedAt,
-    rejectionReason: payout.rejectionReason,
-    createdAt: payout.createdAt,
-    updatedAt: payout.updatedAt,
-  };
-};
-
-const createPayoutRequest = async (
+  const accountHolderName = String(details.accountHolderName || "").trim();
+  const accountNumber = String(details.accountNumber || "").trim();
+  const ifscCode = String(details.ifscCode || "")
+    .trim()
+    .toUpperCase();
+  if (accountHolderName.length < 2 || accountHolderName.length > 100)
+    throw createHttpError("Valid account holder name is required", 400);
+  if (!/^[0-9]{6,30}$/.test(accountNumber))
+    throw createHttpError("Valid bank account number is required", 400);
+  if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode))
+    throw createHttpError("Valid IFSC code is required", 400);
+  return { accountHolderName, accountNumber, ifscCode };
+}
+async function createPayoutRequest(
   userId,
-  amount,
-  payoutMethod,
-  payoutDetails,
-) => {
+  { amount, payoutMethod, payoutDetails, idempotencyKey },
+) {
   const value = Number(amount);
-
-  if (
-    amount === undefined ||
-    amount === null ||
-    amount === "" ||
-    !Number.isFinite(value) ||
-    value <= 0
-  ) {
-    throw createError("Payout amount must be greater than zero", 400);
-  }
-
-  if (!["UPI", "BANK_TRANSFER"].includes(payoutMethod)) {
-    throw createError("Payout method must be UPI or BANK_TRANSFER", 400);
-  }
-
-  if (
-    !payoutDetails ||
-    typeof payoutDetails !== "object" ||
-    Array.isArray(payoutDetails)
-  ) {
-    throw createError("Valid payout details are required", 400);
-  }
-
-  let details;
-
-  if (payoutMethod === "UPI") {
-    const upiId =
-      typeof payoutDetails.upiId === "string" ? payoutDetails.upiId.trim() : "";
-
-    if (!/^[\w.-]{2,256}@[a-zA-Z0-9.-]{2,64}$/.test(upiId)) {
-      throw createError("A valid UPI ID is required", 400);
-    }
-
-    details = { upiId };
-  } else {
-    const accountHolderName =
-      typeof payoutDetails.accountHolderName === "string"
-        ? payoutDetails.accountHolderName.trim()
-        : "";
-
-    const accountNumber =
-      typeof payoutDetails.accountNumber === "string"
-        ? payoutDetails.accountNumber.trim()
-        : "";
-
-    const ifscCode =
-      typeof payoutDetails.ifscCode === "string"
-        ? payoutDetails.ifscCode.trim().toUpperCase()
-        : "";
-
-    if (!accountHolderName || accountHolderName.length > 100) {
-      throw createError("Valid account holder name is required", 400);
-    }
-
-    if (!/^[0-9]{6,30}$/.test(accountNumber)) {
-      throw createError("Valid bank account number is required", 400);
-    }
-
-    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode)) {
-      throw createError("Valid IFSC code is required", 400);
-    }
-
-    details = { accountHolderName, accountNumber, ifscCode };
-  }
-
+  if (!Number.isFinite(value) || value <= 0)
+    throw createHttpError("Withdrawal amount must be greater than zero", 400);
+  if (!["UPI", "BANK_TRANSFER"].includes(payoutMethod))
+    throw createHttpError("Unsupported payout method", 400);
+  if (!idempotencyKey || typeof idempotencyKey !== "string")
+    throw createHttpError("Idempotency key is required", 400);
+  const details = normalizeDetails(payoutMethod, payoutDetails);
+  const requestFingerprint = fingerprint({
+    amount: value,
+    payoutMethod,
+    payoutDetails: details,
+    currency: "VES",
+  });
   const session = await mongoose.startSession();
-
   try {
     let result;
-
     await session.withTransaction(async () => {
-      // Reserve only if enough unreserved balance is available.
-      const wallet = await Wallet.findOneAndUpdate(
-        {
-          user: userId,
-          $expr: {
-            $gte: [
-              {
-                $subtract: ["$balance", { $ifNull: ["$reservedBalance", 0] }],
-              },
-              value,
-            ],
-          },
-        },
-        { $inc: { reservedBalance: value } },
-        { new: true, session },
-      );
-
-      if (!wallet) {
-        const existingWallet = await Wallet.findOne({ user: userId }).session(
-          session,
-        );
-
-        if (!existingWallet) {
-          throw createError("Wallet not found", 404);
-        }
-
-        throw createError("Insufficient available wallet balance", 400);
+      const existing = await Withdrawal.findOne({
+        user: userId,
+        idempotencyKey,
+      }).session(session);
+      if (existing) {
+        if (existing.requestFingerprint !== requestFingerprint)
+          throw createHttpError(
+            "Idempotency key already used for a different withdrawal request",
+            409,
+          );
+        result = { withdrawal: formatWithdrawal(existing), duplicate: true };
+        return;
       }
-
-      const [payout] = await Payout.create(
+      const wallet = await Wallet.findOne({ user: userId }).session(session);
+      if (!wallet) throw createHttpError("Wallet not found", 404);
+      const before = wallet.balances.VES || 0;
+      const reserved = wallet.reservedBalances.VES || 0;
+      if (before - reserved < value)
+        throw createHttpError("Insufficient VES balance", 400);
+      wallet.reservedBalances.VES = reserved + value;
+      await wallet.save({ session });
+      const [withdrawal] = await Withdrawal.create(
         [
           {
             user: userId,
             wallet: wallet._id,
+            currency: "VES",
             amount: value,
             payoutMethod,
             payoutDetails: details,
-            status: "pending",
+            idempotencyKey,
+            requestFingerprint,
           },
         ],
         { session },
       );
-
       result = {
-        id: payout._id.toString(),
-        reference: payout.reference,
-        amount: payout.amount,
-        currency: wallet.currency,
-        payoutMethod: payout.payoutMethod,
-        status: payout.status,
-        createdAt: payout.createdAt,
-        reservedBalance: wallet.reservedBalance,
-        availableBalance: wallet.balance - wallet.reservedBalance,
+        withdrawal: formatWithdrawal(withdrawal),
+        wallet: walletEngine.serializeWallet(wallet),
+        duplicate: false,
       };
     });
-
     return result;
+  } catch (error) {
+    if (error.code === 11000) {
+      const existing = await Withdrawal.findOne({
+        user: userId,
+        idempotencyKey,
+      });
+      if (existing) {
+        if (existing.requestFingerprint !== requestFingerprint)
+          throw createHttpError(
+            "Idempotency key already used for a different withdrawal request",
+            409,
+          );
+        return { withdrawal: formatWithdrawal(existing), duplicate: true };
+      }
+    }
+    throw error;
   } finally {
     await session.endSession();
   }
-};
-
-const getMyPayouts = async (userId, page = 1, limit = 10) => {
-  const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
-  const pageSize = Math.min(50, Math.max(1, Number.parseInt(limit, 10) || 10));
-  const filter = { user: userId };
-
-  const [payouts, total] = await Promise.all([
-    Payout.find(filter)
-      .sort({ createdAt: -1, _id: -1 })
-      .skip((currentPage - 1) * pageSize)
-      .limit(pageSize)
+}
+async function getMyPayouts(userId, page = 1, limit = 10) {
+  const p = Math.max(1, parseInt(page, 10) || 1),
+    l = Math.min(50, Math.max(1, parseInt(limit, 10) || 10));
+  const [items, total] = await Promise.all([
+    Withdrawal.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .skip((p - 1) * l)
+      .limit(l)
       .lean(),
-    Payout.countDocuments(filter),
+    Withdrawal.countDocuments({ user: userId }),
   ]);
-
   return {
-    payouts: payouts.map(formatPayout),
-    pagination: {
-      total,
-      page: currentPage,
-      limit: pageSize,
-      totalPages: Math.ceil(total / pageSize),
-      hasNextPage: currentPage * pageSize < total,
-      hasPreviousPage: currentPage > 1,
-    },
+    withdrawals: items.map(formatWithdrawal),
+    pagination: { total, page: p, limit: l, totalPages: Math.ceil(total / l) },
   };
-};
+}
+async function getMyPayoutById(userId, id) {
+  if (!mongoose.isValidObjectId(id))
+    throw createHttpError("Invalid withdrawal ID", 400);
+  const item = await Withdrawal.findOne({ _id: id, user: userId }).lean();
+  if (!item) throw createHttpError("Withdrawal not found", 404);
+  return formatWithdrawal(item);
+}
 
-const getMyPayoutById = async (userId, payoutId) => {
-  if (!mongoose.isValidObjectId(payoutId)) {
-    throw createError("Invalid payout ID", 400);
+async function transitionWithdrawal(id, adminId, action, reason = "") {
+  if (!mongoose.isValidObjectId(id)) {
+    throw createHttpError("Invalid withdrawal ID", 400);
   }
 
-  const payout = await Payout.findOne({
-    _id: payoutId,
-    user: userId,
-  }).lean();
+  const allowed = {
+    PROCESSING: ["PENDING"],
+    APPROVED: ["PROCESSING", "PENDING"],
+    REJECTED: ["PENDING", "PROCESSING"],
+  };
 
-  if (!payout) {
-    throw createError("Payout not found", 404);
-  }
-
-  return formatPayout(payout);
-};
-
-const approvePayout = async (payoutId, adminId) => {
-  if (!mongoose.isValidObjectId(payoutId)) {
-    throw createError("Invalid payout ID", 400);
-  }
-
-  const session = await mongoose.startSession();
-
-  try {
-    let result;
-
-    await session.withTransaction(async () => {
-      const payout = await Payout.findOne({
-        _id: payoutId,
-        status: "pending",
-      }).session(session);
-
-      if (!payout) {
-        const existing = await Payout.findById(payoutId).session(session);
-
-        if (!existing) {
-          throw createError("Payout not found", 404);
-        }
-
-        throw createError(
-          `Payout cannot be approved because its status is '${existing.status}'`,
-          409,
-        );
-      }
-
-      // Consume the reserved funds and reduce the total balance.
-      const wallet = await Wallet.findOneAndUpdate(
-        {
-          _id: payout.wallet,
-          balance: { $gte: payout.amount },
-          reservedBalance: { $gte: payout.amount },
-        },
-        {
-          $inc: {
-            balance: -payout.amount,
-            reservedBalance: -payout.amount,
-          },
-        },
-        { new: true, session },
-      );
-
-      if (!wallet) {
-        throw createError("Wallet or reserved balance is insufficient", 409);
-      }
-
-      payout.status = "approved";
-      payout.reviewedBy = adminId;
-      payout.reviewedAt = new Date();
-      payout.rejectionReason = null;
-
-      await payout.save({ session });
-
-      const [transaction] = await Transaction.create(
-        [
-          {
-            user: payout.user,
-            wallet: payout.wallet,
-            type: "debit",
-            amount: payout.amount,
-            description: `Payout approved: ${payout.reference}`,
-            status: "completed",
-            reference: randomUUID(),
-          },
-        ],
-        { session },
-      );
-
-      result = {
-        payout: formatPayout(payout.toObject()),
-        walletBalance: wallet.balance,
-        reservedBalance: wallet.reservedBalance,
-        availableBalance: wallet.balance - wallet.reservedBalance,
-        transactionReference: transaction.reference,
-      };
-    });
-
-    return result;
-  } finally {
-    await session.endSession();
-  }
-};
-
-const rejectPayout = async (payoutId, adminId, reason) => {
-  if (!mongoose.isValidObjectId(payoutId)) {
-    throw createError("Invalid payout ID", 400);
-  }
-
-  if (typeof reason !== "string" || !reason.trim()) {
-    throw createError("A rejection reason is required", 400);
-  }
-
-  const cleanReason = reason.trim();
-
-  if (cleanReason.length > 250) {
-    throw createError("Rejection reason cannot exceed 250 characters", 400);
+  if (!allowed[action]) {
+    throw createHttpError("Unsupported withdrawal transition", 400);
   }
 
   const session = await mongoose.startSession();
@@ -336,50 +186,102 @@ const rejectPayout = async (payoutId, adminId, reason) => {
     let result;
 
     await session.withTransaction(async () => {
-      const payout = await Payout.findOne({
-        _id: payoutId,
-        status: "pending",
+      const item = await Withdrawal.findOne({
+        _id: id,
+        status: { $in: allowed[action] },
       }).session(session);
 
-      if (!payout) {
-        const existing = await Payout.findById(payoutId).session(session);
-
-        if (!existing) {
-          throw createError("Payout not found", 404);
-        }
-
-        throw createError(
-          `Payout cannot be rejected because its status is '${existing.status}'`,
+      if (!item) {
+        throw createHttpError(
+          "Withdrawal not found or transition is not allowed",
           409,
         );
       }
 
-      // Release the reserved amount without changing total balance.
-      const wallet = await Wallet.findOneAndUpdate(
-        {
-          _id: payout.wallet,
-          reservedBalance: { $gte: payout.amount },
-        },
-        { $inc: { reservedBalance: -payout.amount } },
-        { new: true, session },
-      );
+      const wallet = await Wallet.findById(item.wallet).session(session);
 
       if (!wallet) {
-        throw createError("Reserved wallet balance is insufficient", 409);
+        throw createHttpError("Wallet not found", 404);
       }
 
-      payout.status = "rejected";
-      payout.reviewedBy = adminId;
-      payout.reviewedAt = new Date();
-      payout.rejectionReason = cleanReason;
+      const before = wallet.balances.VES || 0;
+      const reservedBefore = wallet.reservedBalances.VES || 0;
 
-      await payout.save({ session });
+      // Processing must preserve the reservation.
+      if (action !== "PROCESSING") {
+        if (reservedBefore < item.amount) {
+          throw createHttpError("Reserved VES balance is inconsistent", 409);
+        }
+
+        // Both approval and rejection release the reservation.
+        wallet.reservedBalances.VES = reservedBefore - item.amount;
+      }
+
+      if (action === "APPROVED") {
+        if (before < item.amount) {
+          throw createHttpError("Wallet balance is inconsistent", 409);
+        }
+
+        wallet.balances.VES = before - item.amount;
+
+        await Transaction.create(
+          [
+            {
+              transactionId: randomUUID(),
+              idempotencyKey: `withdrawal:${item.withdrawalId}`,
+              user: item.user,
+              wallet: wallet._id,
+              currency: "VES",
+              type: "WITHDRAWAL",
+              amount: item.amount,
+              balanceBefore: before,
+              balanceAfter: wallet.balances.VES,
+              source: "WITHDRAWAL",
+              referenceId: item.withdrawalId,
+              status: "COMPLETED",
+              description: `Withdrawal ${item.withdrawalId} approved`,
+              performedBy: adminId,
+            },
+          ],
+          { session },
+        );
+      }
+
+      await wallet.save({ session });
+
+      item.status = action;
+      item.reviewedBy = adminId;
+      item.reviewedAt = new Date();
+      item.rejectionReason =
+        action === "REJECTED" ? String(reason).trim() : null;
+
+      await item.save({ session });
+
+      await recordWalletAudit(
+        {
+          actor: adminId,
+          targetUser: item.user,
+          wallet: wallet._id,
+          action: `WITHDRAWAL_${action}`,
+          currency: "VES",
+          amount: item.amount,
+          referenceId: item.withdrawalId,
+          reason: item.rejectionReason || "",
+          beforeBalances: {
+            VES: before,
+            reservedVES: reservedBefore,
+          },
+          afterBalances: {
+            VES: wallet.balances.VES,
+            reservedVES: wallet.reservedBalances.VES,
+          },
+        },
+        session,
+      );
 
       result = {
-        payout: formatPayout(payout.toObject()),
-        walletBalance: wallet.balance,
-        reservedBalance: wallet.reservedBalance,
-        availableBalance: wallet.balance - wallet.reservedBalance,
+        withdrawal: formatWithdrawal(item),
+        wallet: walletEngine.serializeWallet(wallet),
       };
     });
 
@@ -387,12 +289,15 @@ const rejectPayout = async (payoutId, adminId, reason) => {
   } finally {
     await session.endSession();
   }
-};
+}
 
 module.exports = {
   createPayoutRequest,
   getMyPayouts,
   getMyPayoutById,
-  approvePayout,
-  rejectPayout,
+  processPayout: (id, adminId) =>
+    transitionWithdrawal(id, adminId, "PROCESSING"),
+  approvePayout: (id, adminId) => transitionWithdrawal(id, adminId, "APPROVED"),
+  rejectPayout: (id, adminId, reason) =>
+    transitionWithdrawal(id, adminId, "REJECTED", reason),
 };
