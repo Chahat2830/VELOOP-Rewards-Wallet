@@ -1,1 +1,35 @@
-import axios from 'axios';const api=axios.create({baseURL:import.meta.env.VITE_API_URL||'http://localhost:5000/api',timeout:20000,headers:{'Content-Type':'application/json'}});api.interceptors.request.use(c=>{const t=localStorage.getItem('velop_token');if(t)c.headers.Authorization=`Bearer ${t}`;return c;});api.interceptors.response.use(r=>r,e=>{if(e.response?.status===401){localStorage.removeItem('velop_token');localStorage.removeItem('velop_user');if(!location.pathname.startsWith('/login'))location.href='/login';}return Promise.reject(e);});export const errorMessage=e=>e.response?.data?.message||e.response?.data?.errors?.map(x=>x.msg).join(', ')||e.message||'Request failed';export default api;
+const BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL ||
+  "https://veloop-rewards-wallet.onrender.com/api"
+).replace(/\/$/, "");
+
+export function getToken() {
+  return localStorage.getItem("velop_token");
+}
+export function errorMessage(error) {
+  return error?.message || "Something went wrong. Please try again.";
+}
+
+export async function api(path, options = {}) {
+  const token = getToken();
+  const headers = {
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.headers || {}),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(
+    `${BASE_URL}${path.startsWith("/") ? path : `/${path}`}`,
+    {
+      ...options,
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    },
+  );
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success === false) {
+    throw new Error(
+      payload.message || payload.error || `Request failed (${response.status})`,
+    );
+  }
+  return payload.data ?? payload;
+}

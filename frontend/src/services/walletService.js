@@ -1,1 +1,3 @@
-import api from './api';export async function getWallet(){const {data}=await api.get('/wallet');return data?.wallet??data?.data?.wallet??data?.data??data;}
+import { api } from "./api";
+export const getWallet = () => api("/wallet");
+export const getWalletSummary = () => api("/wallet/summary");

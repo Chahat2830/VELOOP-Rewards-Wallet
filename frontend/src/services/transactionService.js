@@ -1,1 +1,7 @@
-import api from './api';export async function getTransactions(page=1,limit=20){const {data}=await api.get('/transactions',{params:{page,limit}});return data?.data?.transactions??data?.transactions??[];}export async function adjustWallet(body,kind){const {data}=await api.post(`/transactions/${kind}`,body);return data?.data??data;}
+import { api } from "./api";
+export const getTransactions = (page = 1, limit = 10) =>
+  api(`/transactions?page=${page}&limit=${limit}`).then(
+    (x) => x.transactions || x.items || x.data || x,
+  );
+export const adjustWallet = (payload, operation = "credit") =>
+  api(`/transactions/${operation}`, { method: "POST", body: payload });

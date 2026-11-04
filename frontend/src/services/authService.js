@@ -1,1 +1,5 @@
-import api from './api';export async function loginRequest(body){const {data}=await api.post('/auth/login',body);const p=data?.data??data;const token=p?.token??p?.accessToken;if(!token)throw new Error('Login response did not contain a token. Check backend auth response.');return {token,user:p?.user??null};}export async function registerRequest(body){const {data}=await api.post('/auth/register',body);return data;}
+import { api } from "./api";
+export const loginRequest = (form) =>
+  api("/auth/login", { method: "POST", body: form });
+export const registerRequest = (form) =>
+  api("/auth/register", { method: "POST", body: form });

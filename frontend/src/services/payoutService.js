@@ -1,1 +1,10 @@
-import api from './api';export async function getPayoutOptions(){const {data}=await api.get('/payouts/options');return data?.data??data;}export async function getPayouts(page=1,limit=50){const {data}=await api.get('/payouts',{params:{page,limit}});return data?.data?.withdrawals??data?.data?.payouts??data?.withdrawals??[];}export async function createPayout(body){const {data}=await api.post('/payouts',body);return data?.data??data;}export async function payoutAction(id,action,body={}){const {data}=await api.patch(`/payouts/${id}/${action}`,body);return data?.data??data;}
+import { api } from "./api";
+export const getPayouts = (page = 1, limit = 100) =>
+  api(`/payouts?page=${page}&limit=${limit}`).then(
+    (x) => x.payouts || x.items || x.withdrawals || x.data || x,
+  );
+export const getPayoutOptions = () => api("/payouts/options");
+export const createPayout = (payload) =>
+  api("/payouts", { method: "POST", body: payload });
+export const payoutAction = (id, action, payload = {}) =>
+  api(`/payouts/${id}/${action}`, { method: "PATCH", body: payload });
