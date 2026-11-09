@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Wallet, Coins, Gem, Ticket, Layers3, ArrowUpRight, ArrowRight, RefreshCw, Sparkles, Gift, Flame, ShieldCheck } from 'lucide-react';
+import { Wallet, Coins, Gem, Layers3, Ticket, ArrowUpRight, RefreshCw, ArrowRight, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { getWallet } from '../services/walletService';
 import { getTransactions } from '../services/transactionService';
@@ -9,20 +8,49 @@ import { errorMessage } from '../services/api';
 import { money } from '../utils/format';
 import TransactionTable from '../components/TransactionTable';
 import { PageIntro, Card, Alert, Loading } from '../components/Ui';
-const assets = [{code:'VES',Icon:Wallet,tone:'teal',label:'Wallet balance'},{code:'SVES',Icon:Coins,tone:'blue',label:'Stable balance'},{code:'GEMS',Icon:Gem,tone:'purple',label:'Premium gems'},{code:'TOKENS',Icon:Layers3,tone:'green',label:'Tokens'},{code:'SPINS',Icon:Ticket,tone:'pink',label:'Available spins'}];
-const gameTiles = [{name:'Spin Wheel',desc:'Spin for rewards',tag:'POPULAR',icon:'🎡',tone:'pink',to:'/games'},{name:'Crash',desc:'Ride the multiplier',icon:'🚀',tone:'purple',to:'/games'},{name:'Dice',desc:'Try your luck',icon:'🎲',tone:'blue',to:'/games'},{name:'Blackjack',desc:'Play your hand',icon:'🂡',tone:'teal',to:'/games'}];
-export default function Dashboard(){
- const {user}=useAuth(); const [wallet,setWallet]=useState(null),[tx,setTx]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(true);
- const load=async()=>{setLoading(true);setError('');try{const [w,t]=await Promise.all([getWallet(),getTransactions(1,5)]);setWallet(w);setTx(Array.isArray(t)?t:t?.transactions||[]);}catch(e){setError(errorMessage(e));}finally{setLoading(false);}};
- useEffect(()=>{load();},[]); const bal=wallet?.balances||{},available=wallet?.availableBalances||{},reserved=wallet?.reservedBalances||{};
- return <div className="page-stack"><PageIntro eyebrow="PLAYER OVERVIEW" title={<>Welcome back, <span className="gradient-text">{user?.name?.split(' ')[0]||'Player'}</span></>} description="Your wallet, rewards and gaming activity at a glance." action={<button className="btn-ghost" onClick={load} disabled={loading}><RefreshCw size={15} className={loading?'spin':''}/> Sync wallet</button>} /><Alert error={error}/>
- <motion.section className="hero-banner" initial={{opacity:0,scale:.985}} animate={{opacity:1,scale:1}}><div className="hero-art-placeholder" aria-hidden="true"/><div className="hero-vignette"/><div className="hero-content"><div className="hero-kicker"><Sparkles size={14}/> VELOOP GAMING</div><h2>Play <i>·</i> Earn <i>·</i> <span>Redeem</span></h2><p>Spin, play games, win rewards and manage your wallet—all in one place.</p><Link className="btn-neon" to="/games"><span>🎮</span> Explore games <ArrowRight size={17}/></Link></div><div className="hero-bubble">✦<small>LEVEL UP</small></div></motion.section>
- <div className="dashboard-grid"><div className="dashboard-main"><div className="balance-layout"><Card className="balance-feature" delay={.05}><div className="balance-top"><span className="asset-symbol">V</span><span className="tiny-chip"><i/> WALLET CONNECTED</span><Sparkles size={18} className="balance-spark"/></div><small className="muted-label">Main balance · VES</small><div className="balance-number">{loading&&!wallet?'••••••':money(bal.VES)}</div><div className="balance-meta"><span><i className="up-trend">↗</i> Live backend balance</span><Link to="/wallet">Wallet details <ArrowUpRight size={14}/></Link></div><div className="balance-footer"><div><small>Available</small><b>{loading&&!wallet?'—':money(available.VES)}</b></div><div className="balance-separator"/><div><small>Reserved</small><b>{loading&&!wallet?'—':money(reserved.VES)}</b></div></div></Card><div className="mini-assets">{assets.slice(1).map(({code,Icon,tone,label},i)=><motion.div key={code} className={`mini-asset ${tone}`} initial={{opacity:0,y:12}} animate={{opacity:1,y:0}} transition={{delay:.08+i*.06}} whileHover={{y:-5,scale:1.015}}><div className="mini-asset-icon"><Icon size={19}/></div><div><small>{label}</small><b>{loading&&!wallet?'—':money(bal[code],code)}</b><span>{code}</span></div></motion.div>)}</div></div>
- <section className="section-block"><div className="section-heading"><div><div className="eyebrow">GAME LOBBY</div><h2><GamepadLabel/> Play & win</h2></div><Link to="/games" className="text-link">All games <ArrowRight size={15}/></Link></div><div className="game-grid">{gameTiles.map((g,i)=><motion.div className={`game-card ${g.tone}`} key={g.name} initial={{opacity:0,y:20}} animate={{opacity:1,y:0}} transition={{delay:.1+i*.07}} whileHover={{y:-8,scale:1.025,rotateX:2}}><div className="game-card-art"><span>{g.icon}</span>{g.tag&&<em>{g.tag}</em>}<div className="game-card-shine"/></div><div className="game-card-copy"><div><h3>{g.name}</h3><p>{g.desc}</p></div><Link to={g.to} className="game-arrow" aria-label={`Open ${g.name}`}><ArrowUpRight size={18}/></Link></div></motion.div>)}</div></section>
- <section className="section-block"><div className="section-heading"><div><div className="eyebrow">LEDGER</div><h2>Recent activity</h2></div><Link to="/transactions" className="text-link">View history <ArrowRight size={15}/></Link></div><Card className="table-card">{loading&&!wallet?<Loading/>:<TransactionTable items={tx}/>}</Card></section>
- </div><aside className="dashboard-side"><Card className="daily-reward" delay={.1}><div className="side-card-heading"><div className="side-icon gift"><Gift size={20}/></div><div><h3>Daily reward</h3><p>Log in and collect your streak.</p></div></div><div className="reward-days">{['Day 1','Day 2','Day 3','Day 4','Day 5'].map((d,i)=><div className={`reward-day ${i<2?'claimed':i===2?'today':'locked'}`} key={d}><span>{i<2?'✓':i===2?'🎁':'🔒'}</span><small>{d}</small></div>)}</div><button className="btn-neon full" onClick={()=>setError('Daily rewards are not connected to a backend endpoint yet.')}>Claim daily reward <Sparkles size={14}/></button><small className="feature-note">Visual preview · reward claim endpoint pending</small></Card>
- <Card className="level-card" delay={.16}><div className="side-card-heading"><div className="side-icon crown">♛</div><div><h3>Player level</h3><p>Season progression</p></div></div><div className="level-line"><b>Level 12</b><span>3,200 / 5,000 XP</span></div><div className="xp-track"><i/></div><small className="feature-note">XP is currently decorative</small></Card>
- <Card className="event-card" delay={.22}><div className="side-card-heading"><div className="side-icon flame"><Flame size={20}/></div><div><h3>Season event</h3><p>Nightfall season</p></div></div><div className="event-art"><div><b>MEGA SPIN EVENT</b><span>Explore the game lobby</span><Link to="/games">View games <ArrowRight size={13}/></Link></div><span className="event-emoji">🎡</span></div></Card>
- <Card delay={.28}><div className="side-card-heading"><div className="side-icon secure"><ShieldCheck size={19}/></div><div><h3>Wallet status</h3><p>Backend connected UI</p></div><span className="status-online">●</span></div><p className="side-info">Wallet values are retrieved from your authenticated VELOOP API.</p><Link to="/wallet" className="text-link">Open wallet <ArrowRight size={14}/></Link></Card></aside></div></div>;
+
+const assets = [
+  {code:'VES', label:'Main balance', Icon:Wallet, tone:'blue'},
+  {code:'SVES', label:'Stable balance', Icon:Coins, tone:'cyan'},
+  {code:'GEMS', label:'Gems', Icon:Gem, tone:'violet'},
+  {code:'TOKENS', label:'Tokens', Icon:Layers3, tone:'blue'},
+  {code:'SPINS', label:'Spins', Icon:Ticket, tone:'cyan'},
+];
+export default function Dashboard() {
+  const { user } = useAuth();
+  const [wallet, setWallet] = useState(null), [transactions, setTransactions] = useState([]);
+  const [error, setError] = useState(''), [loading, setLoading] = useState(true);
+  const load = async () => {
+    setLoading(true); setError('');
+    try {
+      const [w, t] = await Promise.all([getWallet(), getTransactions(1, 5)]);
+      setWallet(w); setTransactions(Array.isArray(t) ? t : t?.transactions || []);
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+  const balances = wallet?.balances || {};
+  const available = wallet?.availableBalances || {};
+  const reserved = wallet?.reservedBalances || {};
+  return <div className="page-stack">
+    <PageIntro eyebrow="ACCOUNT OVERVIEW" title={<>Welcome back, <span className="gradient-text">{user?.name?.split(' ')[0] || 'Member'}</span></>} description="Your VELOOP wallet and rewards, all in one place." action={<button className="btn-ghost" onClick={load} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''}/> Refresh data</button>} />
+    <Alert error={error}/>
+    <section className="dashboard-hero">
+      <div className="hero-glow"/>
+      <div className="hero-content">
+        <div className="hero-kicker"><ShieldCheck size={15}/> VELOOP REWARDS WALLET</div>
+        <h2>Your rewards.<br/><span>One secure wallet.</span></h2>
+        <p>Track balances, review activity, and redeem your eligible rewards.</p>
+        <div className="hero-actions"><Link to="/wallet" className="btn-primary">View wallet <ArrowRight size={16}/></Link><Link to="/withdrawals" className="btn-outline">Withdraw funds <ArrowUpRight size={16}/></Link></div>
+      </div>
+      <div className="hero-abstract"><div className="hero-ring ring-one"/><div className="hero-ring ring-two"/><div className="hero-coin">V</div></div>
+    </section>
+    <div className="section-heading"><div><div className="eyebrow">YOUR ASSETS</div><h2>Wallet summary</h2></div><Link to="/wallet" className="text-link">Open wallet <ArrowUpRight size={14}/></Link></div>
+    <div className="asset-grid">{assets.map(({code,label,Icon,tone},i)=><Card key={code} className={`asset-card ${tone}`} delay={i*.04}><div className="asset-card-head"><span className="asset-icon"><Icon size={19}/></span><span className="asset-code">{code}</span></div><small>{label}</small><h3>{loading&&!wallet?'—':money(balances[code],code)}</h3><div className="asset-card-footer"><span>Available</span><b>{loading&&!wallet?'—':money(available[code],code)}</b></div></Card>)}</div>
+    <div className="dashboard-lower">
+      <Card className="balance-overview"><div className="section-heading"><div><div className="eyebrow">VES BALANCE</div><h2>Main wallet</h2></div><span className="pill pill-blue">Live backend data</span></div><div className="main-balance">{loading&&!wallet?'••••••':money(balances.VES)}</div><div className="balance-detail-grid"><div><small>Available</small><b>{loading&&!wallet?'—':money(available.VES)}</b></div><div><small>Reserved</small><b>{loading&&!wallet?'—':money(reserved.VES)}</b></div></div><div className="card-actions"><Link to="/wallet" className="btn-primary">Wallet details <ArrowRight size={15}/></Link><Link to="/withdrawals" className="text-link">Redeem / withdraw</Link></div></Card>
+      <Card className="quick-actions"><div className="eyebrow">QUICK ACTIONS</div><h2>Manage your account</h2><Link to="/wallet" className="quick-action"><span className="quick-icon"><Wallet size={18}/></span><span><b>View wallet</b><small>Check your available balances</small></span><ArrowUpRight size={16}/></Link><Link to="/transactions" className="quick-action"><span className="quick-icon"><Layers3 size={18}/></span><span><b>Transaction history</b><small>Review credits and debits</small></span><ArrowUpRight size={16}/></Link><Link to="/withdrawals" className="quick-action"><span className="quick-icon"><ArrowUpRight size={18}/></span><span><b>Request withdrawal</b><small>Submit and track a payout</small></span><ArrowUpRight size={16}/></Link></Card>
+    </div>
+    <section className="section-block"><div className="section-heading"><div><div className="eyebrow">RECENT ACTIVITY</div><h2>Latest transactions</h2></div><Link to="/transactions" className="text-link">View all <ArrowUpRight size={14}/></Link></div><Card className="table-card">{loading&&!wallet?<Loading/>:<TransactionTable items={transactions}/>}</Card></section>
+  </div>;
 }
-function GamepadLabel(){return <span className="heading-icon">🎮</span>}
